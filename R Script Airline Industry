@@ -1,0 +1,169 @@
+library(readxl)
+NAP <- read_excel("~/Desktop/Course Notes/ADBM/NAP.xlsx", 
+    sheet = "Data")
+View(NAP)
+
+values <- c(135848.0, 145190.0, 154485.0, 164150.0, 166291.0, 158855.0, 166803.0, 175965.0, 179199.0, 181142.0, 186689.0, 194165.0, 200930.0, 212547.0, 222551.0, 226687.4, 57760.2, 73554.5, 155701.0)
+years <- c(2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022)
+
+
+
+
+### 1. Linear regression: passengers ~ time
+
+model <- lm(values ~ years)
+summary(model)     #summary of the regression
+plot(years, values, type = "l", xlab = "Year", ylab = "Value", main = "Linear Chart") 
+
+
+
+
+#2.Calculating residual 
+
+residuals <- resid(model)   #Calculating residual 
+plot(years, residuals, pch = 16, xlab = "Year", ylab = "Residuals", main = "Residual Plot")   #Ploting the residuals
+abline(h = 0, col = "red")       #Adding horizontal line at y = 0
+
+
+# 3. Create the Q-Q plot for the residuals of the model
+qqnorm(resid(model))
+qqline(resid(model))
+
+### 4. Air Passengers with Regression Trend Line
+
+predicted_values <- predict(model) #Predict the number of passengers using the regression model
+plot(years, values, type = "o", pch = 16, col = "blue", xlab = "Year", ylab = "Number of Passengers", main = "Air Passengers with Regression Trend Line") # Plot the actual data
+lines(years, predicted_values, col = "red", lwd = 2)  #Add the predicted trend line to the plot
+legend("topleft", legend = c("Actual Data", "Trend Line"), col = c("blue", "red"), lty = c(1,1), cex = 0.8) #Add a legend
+
+### 5.Recursive CUSUM with 95% confidence Bands
+
+n <- length(values)
+recursive_cusum <- numeric(n)
+h_values_upper <- numeric(n)
+h_values_lower <- numeric(n)
+
+for (t in 2:n) {
+    mu_t <- mean(values[1:t])
+    sigma_t <- sd(values[1:t])
+    recursive_cusum[t] <- recursive_cusum[t-1] + (values[t] - mu_t)
+    
+    # Compute 95% decision interval for this step
+    alpha <- 0.05
+    h <- sigma_t * qnorm(1 - alpha/2) * sqrt(t)
+    h_values_upper[t] <- h
+    h_values_lower[t] <- -h
+}
+
+# Plot the recursive CUSUM with shaded confidence bands
+plot(years, recursive_cusum, type="l", ylab="Recursive CUSUM", xlab="Year", main="Recursive CUSUM Chart with 95% Confidence Bands", ylim=c(min(recursive_cusum, na.rm=T) - max(h_values_upper, na.rm=T), max(recursive_cusum, na.rm=T) + max(h_values_upper, na.rm=T)))
+polygon(c(years, rev(years)), c(h_values_upper, rev(h_values_lower)), col=gray(0.5), border=NA)
+lines(years, recursive_cusum, col="red")  # Overlay the CUSUM line for clarity
+abline(h=0, col="blue")                     # Reference line at 0
+
+
+
+### 6. Dynamic Model vs Actual Data
+
+##Model 1: Y(t) = C + e(t)
+model1 <- lm(values ~ 1)  # 1 implies intercept-only model.
+C <- coef(model1)[1]  # This extracts the constant C.
+
+##Model 2: Y(t) = C(t) + e(t) where C(t) = C(t-1) + w(t)
+diff_values <- diff(values)
+e_t <- diff_values - mean(diff_values)  #The error term for the random walk model.
+C_t <- cumsum(e_t) + values[1]  #Reconstructs the series.
+
+## Plotting Data into Visualisation
+plot(years, values, type = "o", pch = 16, col = "blue", xlab = "Year", ylab = "Values", main = "Dynamic Model (Random Walk) vs. Actual Data")
+lines(years[-1], C_t, col = "red", lwd = 2)  # years[-1] because the difference reduces the length by 1.
+legend("topleft", legend = c("Actual Data", "Random Walk Model"), col = c("blue", "red"), lty = c(1,1), cex = 0.8)
+
+
+
+
+#7. Particle Filter Test
+
+#Sample data
+y <- c(135848.0, 145190.0, 154485.0, 164150.0, 166291.0, 158855.0, 166803.0,
+       175965.0, 179199.0, 181142.0, 186689.0, 194165.0, 200930.0, 212547.0, 
+       222551.0, 226687.4, 57760.2, 73554.5, 155701.0)
+N <- 500 # Number of particles
+
+# Use standard deviation of the differences as our noise model
+sd_diff <- sd(diff(y))
+
+StSp_Obj <- list(
+  rprior = function(n) rnorm(n, mean(y[1]), sd=sd_diff),
+  rtrans = function(x) x + rnorm(length(x), 0, sd=sd_diff),
+  dprop = function(y_t, x, t) dnorm(y_t, mean=x, sd=sd_diff, log=TRUE),
+  dlike = function(y_t, x, t) dnorm(y_t, mean=x, sd=sd_diff, log=TRUE)
+)
+
+AParticleFilter <- function(y, StSp_Obj, N){
+  ts.len <- length(y)
+  
+  post.m <- NULL
+  post.C <- vector(mode="list", ts.len)
+  log.like <- 0
+  lL <- NULL
+  
+  x.f <- as.matrix(StSp_Obj$rprior(N))  # initial particles
+  index <- seq_len(N)
+  
+  for (t in seq_len(ts.len)){
+    # resample
+    w1_log <- StSp_Obj$dprop(y[t], x.f, t)
+    w1 <- exp(w1_log - max(w1_log))
+    w1 <- w1 / sum(w1)
+    
+    s1.index <- sample(index, size=N, replace=TRUE, prob=w1)
+    
+    # propagate
+    x.f <- StSp_Obj$rtrans(as.matrix(x.f[s1.index,]))
+    
+    # resample
+    w2_log <- StSp_Obj$dlike(y[t], x.f, t) - w1_log[s1.index]
+    w2 <- exp(w2_log - max(w2_log))
+    w2 <- w2 / sum(w2)
+    
+    s2.index <- sample(index, size=N, replace=TRUE, prob=w2)
+    x.f <- as.matrix(x.f[s2.index,])
+    
+    # posterior statistics
+    post.m <- rbind(post.m, colMeans(x.f))
+    post.C[[t]] <- cov(x.f)
+    
+    log.like <- log.like + log(mean(exp(w1_log)))
+    lL <- c(lL, log(mean(exp(w1_log))))
+  }
+  
+  return(list(m=post.m, C=post.C, lL=lL, log.like=log.like))
+}
+
+
+
+### 8. Runing the filter
+result <- AParticleFilter(y, StSp_Obj, N)
+
+# Extract filtered means and variances
+filtered_means <- result$m
+filtered_variances <- sapply(result$C, diag)
+
+plot(y, type="l", lwd=2, col="black", ylim=range(c(y, filtered_means + 2*sqrt(filtered_variances), 
+                                                   filtered_means - 2*sqrt(filtered_variances))), 
+     main="Particle Filter Results", xlab="Time", ylab="Value")
+lines(filtered_means, col="blue", lwd=2)
+polygon(c(1:length(y), rev(1:length(y))), 
+        c(filtered_means + 2*sqrt(filtered_variances), rev(filtered_means - 2*sqrt(filtered_variances))),
+        col=rgb(0.8, 0.8, 1, alpha=0.3), border=NA)
+
+lines(filtered_means, col="blue", lwd=2)
+legend("topleft", legend=c("Observations", "Filtered Mean", "95% CI"), 
+       lwd=c(2,2,2), col=c("black", "blue", rgb(0.8,0.8,1, alpha=0.3)))
+
+
+
+
+
+
